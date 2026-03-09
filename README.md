@@ -106,6 +106,13 @@ python -m pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/sim
 python .\app.py
 ```
 
+## EXE 直接下载使用
+
+- 仓库已提供独立可运行版本：`dist/OpenClaw助手.exe`；
+- 在 GitHub 仓库页面可直接下载该文件到本地后双击运行；
+- 首次运行若被系统拦截，请在 Windows 安全提示中选择“仍要运行”；
+- 建议将 `OpenClaw助手.exe` 与可写目录放在同一磁盘（便于写入 `data/` 配置与日志）。
+
 ## 首次使用建议
 
 1. 在 GUI 中设置：
