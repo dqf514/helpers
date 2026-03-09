@@ -42,7 +42,7 @@ DATA_DIR = APP_DIR / "data"
 LOG_DIR = DATA_DIR / "logs"
 CONFIG_PATH = DATA_DIR / "config.json"
 ICON_RELATIVE_PATH = Path("image") / "openclaw_lobster.ico"
-LANG_MODE = "bilingual"
+LANG_MODE = "zh"
 
 
 def bi(zh: str, en: str) -> str:
@@ -56,7 +56,7 @@ def bi(zh: str, en: str) -> str:
 def set_lang_mode(mode: str) -> None:
     global LANG_MODE
     if mode not in {"zh", "en", "bilingual"}:
-        LANG_MODE = "bilingual"
+        LANG_MODE = "zh"
         return
     LANG_MODE = mode
 
@@ -206,7 +206,7 @@ class AppConfig:
     npm_cmd: str = "npm"
     winget_cmd: str = "winget"
     npm_registry: str = "https://registry.npmmirror.com"
-    language_mode: str = "bilingual"
+    language_mode: str = "zh"
     working_dir: str = ""
     thinking_level: str = "medium"
     timeout_seconds: int = 120
@@ -2439,7 +2439,7 @@ class OpenClawGui(QMainWindow):
                     "npm_registry",
                     "https://registry.npmmirror.com",
                 ),
-                language_mode=data.get("language_mode", "bilingual"),
+                language_mode=data.get("language_mode", "zh"),
                 working_dir=data.get("working_dir", ""),
                 thinking_level=data.get("thinking_level", "medium"),
                 timeout_seconds=int(data.get("timeout_seconds", 120)),
