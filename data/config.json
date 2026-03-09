@@ -1,0 +1,13 @@
+{
+  "openclaw_cmd": "openclaw",
+  "node_cmd": "node",
+  "npm_cmd": "npm",
+  "winget_cmd": "winget",
+  "npm_registry": "https://registry.npmmirror.com",
+  "language_mode": "zh",
+  "working_dir": "",
+  "thinking_level": "medium",
+  "timeout_seconds": 120,
+  "extra_args": "",
+  "test_message": "你好，请回复“连接成功”。"
+}
