@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -84,6 +85,38 @@ def resolve_command_for_system(base_cmd: str) -> str:
         hit = shutil.which(item)
         if hit:
             return hit
+
+    # Windows 新装机场景：Node/npm 可能已安装，但当前进程 PATH 未刷新。
+    if is_windows():
+        lowered = cmd.lower()
+        windows_fallbacks = {
+            "node": ["node.exe"],
+            "node.exe": ["node.exe"],
+            "npm": ["npm.cmd", "npm.exe", "npm"],
+            "npm.cmd": ["npm.cmd", "npm.exe", "npm"],
+            "npx": ["npx.cmd", "npx.exe", "npx"],
+            "npx.cmd": ["npx.cmd", "npx.exe", "npx"],
+            "git": ["git.exe", "git.cmd", "git"],
+            "git.exe": ["git.exe", "git.cmd", "git"],
+        }
+        tool_names = windows_fallbacks.get(lowered, [])
+        if tool_names:
+            search_roots = []
+            for env_key in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"]:
+                root = os.environ.get(env_key, "").strip()
+                if root:
+                    search_roots.append(Path(root))
+            candidate_dirs = []
+            for root in search_roots:
+                candidate_dirs.append(root / "nodejs")
+                candidate_dirs.append(root / "Programs" / "nodejs")
+                candidate_dirs.append(root / "Git" / "cmd")
+                candidate_dirs.append(root / "Git" / "bin")
+            for cdir in candidate_dirs:
+                for tname in tool_names:
+                    full = cdir / tname
+                    if full.exists():
+                        return str(full)
     return candidates[0]
 
 
@@ -403,6 +436,7 @@ class CommandTask(QRunnable):
         env_ok = bool(
             details.get("node_ok")
             and details.get("npm_ok")
+            and details.get("git_ok")
             and details.get("source_ok")
         )
         self.bus.startup_stage.emit(
@@ -411,9 +445,11 @@ class CommandTask(QRunnable):
             bi(
                 f"Node={details.get('node_text', '-')}; "
                 f"npm={details.get('npm_text', '-')}; "
+                f"git={details.get('git_text', '-')}; "
                 f"安装源={details.get('source_text', '-')}",
                 f"Node={details.get('node_text', '-')}; "
                 f"npm={details.get('npm_text', '-')}; "
+                f"git={details.get('git_text', '-')}; "
                 f"registry={details.get('source_text', '-')}",
             ),
         )
@@ -439,6 +475,7 @@ class CommandTask(QRunnable):
             f"[{self._now()}] 环境检测完成："
             f"Node={details['node_ok']} "
             f"npm={details['npm_ok']} "
+            f"git={details['git_ok']} "
             f"源={details['source_ok']}"
         )
         self.bus.env_result.emit(details)
@@ -449,6 +486,8 @@ class CommandTask(QRunnable):
             "node_text": bi("未检测", "Not checked"),
             "npm_ok": False,
             "npm_text": bi("未检测", "Not checked"),
+            "git_ok": False,
+            "git_text": bi("未检测", "Not checked"),
             "source_ok": False,
             "source_text": bi("未检测", "Not checked"),
             "openclaw_ok": False,
@@ -458,7 +497,13 @@ class CommandTask(QRunnable):
             "install_ready": False,
         }
         if progress_cb is not None:
-            progress_cb(12, bi("运行环境检测：Node/npm/安装源", "Runtime env check"))
+            progress_cb(
+                12,
+                bi(
+                    "运行环境检测：Node/npm/git/安装源",
+                    "Runtime env check: node/npm/git/registry",
+                ),
+            )
 
         # Node 检测（要求 >=22）
         try:
@@ -517,6 +562,32 @@ class CommandTask(QRunnable):
             details["npm_text"] = bi(
                 f"npm 检测失败：{ex}",
                 f"npm check failed: {ex}",
+            )
+
+        # git 检测（npm 安装 openclaw 依赖）
+        try:
+            git_cmd = resolve_command_for_system("git")
+            git_result = self._run_subprocess(
+                [git_cmd, "--version"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=20,
+                shell=False,
+            )
+            if git_result.returncode == 0:
+                details["git_ok"] = True
+                details["git_text"] = git_result.stdout.strip()
+            else:
+                details["git_text"] = (
+                    git_result.stderr.strip()
+                    or git_result.stdout.strip()
+                    or bi("git 不可用", "git unavailable")
+                )
+        except Exception as ex:
+            details["git_text"] = bi(
+                f"git 检测失败：{ex}",
+                f"git check failed: {ex}",
             )
 
         # 安装源连通性检测（中国大陆可用优先）
@@ -634,6 +705,7 @@ class CommandTask(QRunnable):
         details["install_ready"] = bool(
             details["node_ok"]
             and details["npm_ok"]
+            and details["git_ok"]
             and details["source_ok"]
         )
 
@@ -679,6 +751,40 @@ class CommandTask(QRunnable):
         self.bus.log.emit(
             f"[{self._now()}] npm 源已设置为：{self.config.npm_registry}"
         )
+
+        # 步骤1.5：确认 git 可用，否则 npm 可能报 ENOENT spawn git
+        try:
+            git_cmd = resolve_command_for_system("git")
+            git_result = self._run_subprocess(
+                [git_cmd, "--version"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=20,
+                shell=False,
+            )
+            if git_result.returncode != 0:
+                self.bus.install_finished.emit(
+                    False,
+                    bi(
+                        "检测到 git 不可用，无法继续安装。"
+                        "请先执行“一键修复环境”安装 git。",
+                        "git is unavailable, install cannot continue. "
+                        "Run One-click Repair to install git first.",
+                    ),
+                )
+                return
+        except Exception:
+            self.bus.install_finished.emit(
+                False,
+                bi(
+                    "检测到 git 不可用，无法继续安装。"
+                    "请先执行“一键修复环境”安装 git。",
+                    "git is unavailable, install cannot continue. "
+                    "Run One-click Repair to install git first.",
+                ),
+            )
+            return
 
         # 步骤2：执行安装
         self.bus.install_progress.emit(
@@ -880,10 +986,60 @@ class CommandTask(QRunnable):
                     f"[{bi('修复', 'Repair')}] "
                     f"{bi('Node LTS 安装完成。', 'Node LTS installed.')}"
                 )
+                # 新装系统里 PATH 可能未即时刷新，主动重定位 node/npm。
+                self.config.node_cmd = resolve_command_for_system("node")
+                self.config.npm_cmd = resolve_command_for_system("npm")
+                self.bus.log.emit(
+                    f"[{bi('修复', 'Repair')}] "
+                    f"{bi('已重定位命令路径', 'Command paths refreshed')}: "
+                    f"node={self.config.node_cmd}, npm={self.config.npm_cmd}"
+                )
+
+        git_ok = bool(details.get("git_ok"))
+        if not git_ok and is_windows():
+            self.bus.install_progress.emit(
+                40, bi("修复 Git 环境", "Repairing Git environment")
+            )
+            self.bus.log.emit(
+                f"[{self._now()}] "
+                f"{bi('Git 不可用，尝试自动安装 Git。', 'Git missing, trying auto install.')}"
+            )
+            install_git_cmd = [
+                self.config.winget_cmd,
+                "install",
+                "-e",
+                "--id",
+                "Git.Git",
+                "--accept-package-agreements",
+                "--accept-source-agreements",
+                "--silent",
+            ]
+            git_result = self._run_subprocess(
+                install_git_cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=600,
+                shell=False,
+            )
+            if git_result.returncode != 0:
+                has_error = True
+                err_text = (
+                    git_result.stderr.strip() or git_result.stdout.strip()
+                )
+                self.bus.log.emit(f"[修复] Git 安装失败：{err_text}")
+            else:
+                repaired_steps.append(bi("Git 安装完成", "Git installed"))
+                self.bus.log.emit(
+                    f"[{bi('修复', 'Repair')}] "
+                    f"{bi('Git 安装完成。', 'Git installed.')}"
+                )
 
         self.bus.install_progress.emit(
             55, bi("修复 npm 镜像配置", "Repairing npm mirror settings")
         )
+        self.config.node_cmd = resolve_command_for_system(self.config.node_cmd)
+        self.config.npm_cmd = resolve_command_for_system(self.config.npm_cmd)
         set_registry_cmd = [
             self.config.npm_cmd,
             "config",
@@ -1456,6 +1612,7 @@ class OpenClawGui(QMainWindow):
 
         self.lbl_node = QLabel(bi("Node：未检测", "Node: Not checked"))
         self.lbl_npm = QLabel(bi("npm：未检测", "npm: Not checked"))
+        self.lbl_git = QLabel(bi("git：未检测", "git: Not checked"))
         self.lbl_source = QLabel(
             bi("安装源：未检测", "Registry source: Not checked")
         )
@@ -1471,10 +1628,11 @@ class OpenClawGui(QMainWindow):
         self.lbl_summary.setObjectName("summaryWarn")
         env_grid.addWidget(self.lbl_node, 0, 0)
         env_grid.addWidget(self.lbl_npm, 1, 0)
-        env_grid.addWidget(self.lbl_source, 2, 0)
-        env_grid.addWidget(self.lbl_openclaw, 3, 0)
-        env_grid.addWidget(self.lbl_runtime, 4, 0)
-        env_grid.addWidget(self.lbl_summary, 5, 0)
+        env_grid.addWidget(self.lbl_git, 2, 0)
+        env_grid.addWidget(self.lbl_source, 3, 0)
+        env_grid.addWidget(self.lbl_openclaw, 4, 0)
+        env_grid.addWidget(self.lbl_runtime, 5, 0)
+        env_grid.addWidget(self.lbl_summary, 6, 0)
         env_layout.addLayout(env_grid)
         right_col.addWidget(env_card)
 
@@ -1693,13 +1851,18 @@ class OpenClawGui(QMainWindow):
                 )
             )
             return
-        if not details.get("node_ok") or not details.get("npm_ok"):
+        if (
+            not details.get("node_ok")
+            or not details.get("npm_ok")
+            or not details.get("git_ok")
+        ):
             self._set_suggested_button(self.btn_repair)
             self.next_hint_label.setText(
                 bi(
-                    "建议下一步：先点“一键修复环境”，修复 Node/npm 后再安装。",
+                    "建议下一步：先点“一键修复环境”，"
+                    "修复 Node/npm/git 后再安装。",
                     "Next suggestion: click One-click Repair first, "
-                    "then install after Node/npm are fixed.",
+                    "then install after node/npm/git are fixed.",
                 )
             )
             return
@@ -2078,11 +2241,15 @@ class OpenClawGui(QMainWindow):
         unknown_text = bi("未知", "Unknown")
         node_text = details.get("node_text", unknown_text)
         npm_text = details.get("npm_text", unknown_text)
+        git_text = details.get("git_text", unknown_text)
         self.lbl_node.setText(
             f"{bi('Node', 'Node')}: {node_text}"
         )
         self.lbl_npm.setText(
             f"{bi('npm', 'npm')}: {npm_text}"
+        )
+        self.lbl_git.setText(
+            f"{bi('git', 'git')}: {git_text}"
         )
         self.lbl_source.setText(
             f"{bi('安装源', 'Registry source')}: "
