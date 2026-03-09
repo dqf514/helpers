@@ -125,6 +125,16 @@ def app_resource_path(relative_path: Path) -> Path:
     return base_dir / relative_path
 
 
+def command_exists(command: str) -> bool:
+    cmd = command.strip()
+    if not cmd:
+        return False
+    path_obj = Path(cmd)
+    if path_obj.is_absolute():
+        return path_obj.exists()
+    return bool(shutil.which(cmd))
+
+
 if is_windows():
     user32 = ctypes.windll.user32
     GWL_STYLE = -16
@@ -296,6 +306,7 @@ class CommandTask(QRunnable):
     ) -> subprocess.CompletedProcess:
         cmd = command.copy()
         cmd[0] = self._resolve_command(cmd[0])
+        kwargs.setdefault("env", self._build_subprocess_env())
         try:
             return subprocess.run(cmd, **kwargs)
         except FileNotFoundError as ex:
@@ -313,6 +324,7 @@ class CommandTask(QRunnable):
     ) -> subprocess.Popen:
         cmd = command.copy()
         cmd[0] = self._resolve_command(cmd[0])
+        kwargs.setdefault("env", self._build_subprocess_env())
         try:
             return subprocess.Popen(cmd, **kwargs)
         except FileNotFoundError as ex:
@@ -324,6 +336,22 @@ class CommandTask(QRunnable):
                 f"{bi('命令不存在', 'Command not found')}: {command[0]} "
                 f"({hint})"
             ) from ex
+
+    def _build_subprocess_env(self) -> dict:
+        env = os.environ.copy()
+        path_entries = env.get("PATH", "").split(os.pathsep)
+        extra_dirs = []
+        for tool in [self.config.node_cmd, self.config.npm_cmd, "git"]:
+            resolved = resolve_command_for_system(tool)
+            if command_exists(resolved):
+                resolved_path = Path(resolved)
+                if resolved_path.is_absolute():
+                    extra_dirs.append(str(resolved_path.parent))
+        for d in extra_dirs:
+            if d and d not in path_entries:
+                path_entries.insert(0, d)
+        env["PATH"] = os.pathsep.join(path_entries)
+        return env
 
     def _run_chat(self) -> None:
         command = [
@@ -1137,6 +1165,17 @@ class CommandTask(QRunnable):
         )
 
         openclaw_exec = self._resolve_command(self.config.openclaw_cmd)
+        if not command_exists(openclaw_exec):
+            self.bus.install_finished.emit(
+                False,
+                bi(
+                    "启动设置向导失败：未找到 OpenClaw 命令。"
+                    "请先完成安装或在配置中修正 OpenClaw 命令路径。",
+                    "Failed to launch setup wizard: OpenClaw command not found. "
+                    "Install first or correct OpenClaw command path in config.",
+                ),
+            )
+            return
         self.bus.log.emit(
             f"[{self._now()}] "
             f"{bi('初始化命令解析为', 'Resolved onboarding command')}: "
@@ -1804,8 +1843,6 @@ class OpenClawGui(QMainWindow):
         set_lang_mode(str(mode))
         self._refresh_language_texts()
         self._save_from_ui(silent=True)
-        if not self.running:
-            self._environment_check()
 
     def _auto_startup_check(self) -> None:
         if self.running:
@@ -2338,8 +2375,6 @@ class OpenClawGui(QMainWindow):
         self._log(message)
         if ok:
             QMessageBox.information(self, bi("执行成功", "Success"), message)
-            # 任务完成后自动刷新环境状态
-            QTimer.singleShot(200, self._environment_check)
         else:
             QMessageBox.warning(
                 self, bi("执行失败", "Failed"), message
