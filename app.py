@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal, Qt
 from PySide6.QtGui import QColor, QFont, QIcon
 from PySide6.QtWidgets import (
     QApplication,
@@ -1596,17 +1596,17 @@ class OpenClawGui(QMainWindow):
         wizard_layout.setSpacing(6)
         self.wizard_steps_label = QLabel(
             bi(
-                "1) 保存配置  2) 环境检测  3) 一键修复(可选)  "
-                "4) 一键安装  5) 一键初始化向导  6) 去聊天页开始对话",
-                "1) Save  2) Env Check  3) Repair(optional)  "
-                "4) Install  5) Onboard  6) Go to Chat tab",
+                "1) 环境检测  2) 一键修复(可选)  3) 一键安装  "
+                "4) 设置向导  5) 管理与配置  6) 会话调试",
+                "1) Env Check  2) Repair(optional)  3) Install  "
+                "4) Setup Wizard  5) Manage & Config  6) Chat Debug",
             )
         )
         self.wizard_steps_label.setWordWrap(True)
         wizard_layout.addWidget(self.wizard_steps_label)
         layout.addWidget(wizard_card)
 
-        self.btn_save = QPushButton(bi("保存配置", "Save"))
+        self.btn_save = QPushButton(bi("保存程序设置", "Save App Settings"))
         self.btn_env_check = QPushButton(bi("环境检测", "Environment Check"))
         self.btn_repair = QPushButton(bi("一键修复环境", "One-click Repair"))
         self.btn_install = QPushButton(
@@ -1660,128 +1660,33 @@ class OpenClawGui(QMainWindow):
         right_col = QVBoxLayout()
         right_col.setSpacing(12)
 
-        config_card = QFrame()
-        config_card.setObjectName("card")
-        config_layout = QVBoxLayout(config_card)
-        config_layout.setContentsMargins(12, 12, 12, 12)
-        config_layout.setSpacing(10)
-
-        self.config_header = QLabel(bi("部署配置", "Deployment Settings"))
-        self.config_header.setObjectName("sectionHeader")
-        config_layout.addWidget(self.config_header)
-
-        form = QGridLayout()
-        form.setHorizontalSpacing(10)
-        form.setVerticalSpacing(10)
-        form.setColumnStretch(1, 1)
-
-        self.input_cmd = QLineEdit()
-        self.input_node_cmd = QLineEdit()
-        self.input_npm_cmd = QLineEdit()
-        self.input_winget_cmd = QLineEdit()
-        self.input_registry = QLineEdit()
-        self.input_workdir = QLineEdit()
-        self.input_thinking = QLineEdit()
-        self.input_timeout = QLineEdit()
-        self.input_extra = QLineEdit()
-        self.input_test_message = QLineEdit()
-
-        self.field_editors = {
-            "openclaw_cmd": self.input_cmd,
-            "node_cmd": self.input_node_cmd,
-            "npm_cmd": self.input_npm_cmd,
-            "winget_cmd": self.input_winget_cmd,
-            "npm_registry": self.input_registry,
-            "working_dir": self.input_workdir,
-            "thinking_level": self.input_thinking,
-            "timeout_seconds": self.input_timeout,
-            "extra_args": self.input_extra,
-            "test_message": self.input_test_message,
-        }
-        field_meta = [
-            (
-                "openclaw_cmd",
-                "OpenClaw 命令",
-                "OpenClaw Command",
-                "例如：openclaw",
-                "Example: openclaw",
-            ),
-            (
-                "node_cmd",
-                "Node 命令",
-                "Node Command",
-                "例如：node",
-                "Example: node",
-            ),
-            (
-                "npm_cmd",
-                "npm 命令",
-                "npm Command",
-                "例如：npm",
-                "Example: npm",
-            ),
-            (
-                "winget_cmd",
-                "winget 命令",
-                "winget Command",
-                "例如：winget",
-                "Example: winget",
-            ),
-            (
-                "npm_registry",
-                "npm 安装源",
-                "npm Registry",
-                "默认：https://registry.npmmirror.com",
-                "Default: https://registry.npmmirror.com",
-            ),
-            (
-                "working_dir",
-                "工作目录",
-                "Working Directory",
-                "可留空，默认当前目录",
-                "Optional, defaults to current dir",
-            ),
-            (
-                "thinking_level",
-                "思考等级",
-                "Thinking Level",
-                "off|minimal|low|medium|high",
-                "off|minimal|low|medium|high",
-            ),
-            (
-                "timeout_seconds",
-                "超时秒数",
-                "Timeout Seconds",
-                "例如：120",
-                "Example: 120",
-            ),
-            (
-                "extra_args",
-                "附加参数",
-                "Extra Args",
-                "例如：--verbose",
-                "Example: --verbose",
-            ),
-            (
-                "test_message",
-                "检测消息",
-                "Check Message",
-                "用于连接测试",
-                "Used for connectivity test",
-            ),
-        ]
-        for row, meta in enumerate(field_meta):
-            key, zh_label, en_label, zh_ph, en_ph = meta
-            label = QLabel(bi(zh_label, en_label))
-            label.setObjectName("fieldLabel")
-            editor = self.field_editors[key]
-            editor.setPlaceholderText(bi(zh_ph, en_ph))
-            self.field_labels[key] = label
-            form.addWidget(label, row, 0)
-            form.addWidget(editor, row, 1)
-        config_layout.addLayout(form)
-
-        left_col.addWidget(config_card)
+        intro_card = QFrame()
+        intro_card.setObjectName("card")
+        intro_layout = QVBoxLayout(intro_card)
+        intro_layout.setContentsMargins(12, 12, 12, 12)
+        intro_layout.setSpacing(10)
+        self.guide_intro_header = QLabel(
+            bi("安装步骤说明（推荐流程）", "Install Steps (Recommended)")
+        )
+        self.guide_intro_header.setObjectName("sectionHeader")
+        intro_layout.addWidget(self.guide_intro_header)
+        self.guide_steps_label = QLabel(self._build_step_cards_html())
+        self.guide_steps_label.setObjectName("guideSteps")
+        self.guide_steps_label.setTextFormat(Qt.TextFormat.RichText)
+        self.guide_steps_label.setWordWrap(True)
+        intro_layout.addWidget(self.guide_steps_label)
+        self.tool_intro_header = QLabel(
+            bi("工具说明", "About This Tool")
+        )
+        self.tool_intro_header.setObjectName("sectionHeader")
+        intro_layout.addWidget(self.tool_intro_header)
+        self.tool_intro_label = QLabel(self._build_tool_intro_html())
+        self.tool_intro_label.setObjectName("toolIntro")
+        self.tool_intro_label.setTextFormat(Qt.TextFormat.RichText)
+        self.tool_intro_label.setWordWrap(True)
+        intro_layout.addWidget(self.tool_intro_label)
+        left_col.addWidget(intro_card)
+        left_col.addStretch(1)
 
         env_card = QFrame()
         env_card.setObjectName("card")
@@ -1941,9 +1846,9 @@ class OpenClawGui(QMainWindow):
         self.min_provider = QComboBox()
         self.min_provider.addItem("kimi-coding")
         self.min_provider.addItem("qwen")
-        self.min_provider.addItem("qwen-local")
         self.min_provider.addItem("moonshot")
         self.min_provider.addItem("minimax")
+        self.min_provider.addItem("custom")
         self.min_model_id = QLineEdit("k2p5")
         self.min_base_url = QLineEdit("https://api.kimi.com/coding/")
         self.min_api_key = QLineEdit()
@@ -2435,6 +2340,66 @@ class OpenClawGui(QMainWindow):
         )
         self.startup_checklist_label.setText(text)
 
+    def _build_step_cards_html(self) -> str:
+        return bi(
+            "<div>"
+            "<div style='padding:8px 10px;border:1px solid #d8e2f3;"
+            "border-radius:8px;margin:4px 0;background:#f8fbff;'>"
+            "🔎 <b>步骤 1：环境检测</b><br/>检查 Node/npm/git 与安装源连通性。</div>"
+            "<div style='padding:8px 10px;border:1px solid #d8e2f3;"
+            "border-radius:8px;margin:4px 0;background:#f8fbff;'>"
+            "🛠 <b>步骤 2：一键修复（可选）</b><br/>检测失败时自动修复依赖环境。</div>"
+            "<div style='padding:8px 10px;border:1px solid #d8e2f3;"
+            "border-radius:8px;margin:4px 0;background:#f8fbff;'>"
+            "📦 <b>步骤 3：一键安装</b><br/>环境通过后安装 OpenClaw 最新版。</div>"
+            "<div style='padding:8px 10px;border:1px solid #d8e2f3;"
+            "border-radius:8px;margin:4px 0;background:#f8fbff;'>"
+            "⚙ <b>步骤 4：设置向导</b><br/>在弹出的原生终端完成首次初始化。</div>"
+            "<div style='padding:8px 10px;border:1px solid #d8e2f3;"
+            "border-radius:8px;margin:4px 0;background:#f8fbff;'>"
+            "🧩 <b>步骤 5：管理与配置</b><br/>在管理页设置模型、配置文件和网关控制。</div>"
+            "<div style='padding:8px 10px;border:1px solid #d8e2f3;"
+            "border-radius:8px;margin:4px 0;background:#f8fbff;'>"
+            "💬 <b>步骤 6：会话调试</b><br/>进入会话页做连接与消息测试。</div>"
+            "</div>",
+            "<div>"
+            "<div style='padding:8px 10px;border:1px solid #d8e2f3;"
+            "border-radius:8px;margin:4px 0;background:#f8fbff;'>"
+            "🔎 <b>Step 1: Environment Check</b><br/>Verify Node/npm/git and "
+            "registry connectivity.</div>"
+            "<div style='padding:8px 10px;border:1px solid #d8e2f3;"
+            "border-radius:8px;margin:4px 0;background:#f8fbff;'>"
+            "🛠 <b>Step 2: One-click Repair (Optional)</b><br/>Auto-fix missing "
+            "runtime dependencies.</div>"
+            "<div style='padding:8px 10px;border:1px solid #d8e2f3;"
+            "border-radius:8px;margin:4px 0;background:#f8fbff;'>"
+            "📦 <b>Step 3: One-click Install</b><br/>Install latest OpenClaw once "
+            "checks pass.</div>"
+            "<div style='padding:8px 10px;border:1px solid #d8e2f3;"
+            "border-radius:8px;margin:4px 0;background:#f8fbff;'>"
+            "⚙ <b>Step 4: Setup Wizard</b><br/>Finish first-run setup in native "
+            "terminal window.</div>"
+            "<div style='padding:8px 10px;border:1px solid #d8e2f3;"
+            "border-radius:8px;margin:4px 0;background:#f8fbff;'>"
+            "🧩 <b>Step 5: Manage & Config</b><br/>Configure model, config file "
+            "and gateway control.</div>"
+            "<div style='padding:8px 10px;border:1px solid #d8e2f3;"
+            "border-radius:8px;margin:4px 0;background:#f8fbff;'>"
+            "💬 <b>Step 6: Chat Debug</b><br/>Run connection and messaging tests.</div>"
+            "</div>",
+        )
+
+    def _build_tool_intro_html(self) -> str:
+        return bi(
+            "<b>✅ 工具定位</b>：用于 OpenClaw 本地安装、初始化与日常维护。<br/>"
+            "<b>✅ 核心能力</b>：环境检测、安装修复、配置文件管理、网关控制、调试会话。<br/>"
+            "<b>✅ 适用场景</b>：首次部署快速落地，以及后续故障排查。",
+            "<b>✅ Purpose</b>: local OpenClaw install, setup and maintenance.<br/>"
+            "<b>✅ Core features</b>: env checks, repair/install, config editing, "
+            "gateway control and debug chat.<br/>"
+            "<b>✅ Best for</b>: first-time setup and ongoing troubleshooting.",
+        )
+
     def _refresh_language_texts(self) -> None:
         self.setWindowTitle(
             bi("OpenClaw 本地助手控制台", "OpenClaw Local Assistant Console")
@@ -2448,11 +2413,16 @@ class OpenClawGui(QMainWindow):
                 "Environment checks, one-click install, setup and local chat.",
             )
         )
-        self.config_header.setText(bi("部署配置", "Deployment Settings"))
         self.wizard_header.setText(bi("快速引导", "Quick Wizard"))
         self.op_header.setText(bi("操作步骤", "Action Steps"))
         self.env_header.setText(bi("环境检测结果", "Environment Status"))
         self.action_header.setText(bi("安装与维护", "Install & Maintenance"))
+        self.guide_intro_header.setText(
+            bi("安装步骤说明（推荐流程）", "Install Steps (Recommended)")
+        )
+        self.guide_steps_label.setText(self._build_step_cards_html())
+        self.tool_intro_header.setText(bi("工具说明", "About This Tool"))
+        self.tool_intro_label.setText(self._build_tool_intro_html())
         self.manager_header.setText(
             bi("OpenClaw 管理与配置", "OpenClaw Manage & Config")
         )
@@ -2474,16 +2444,16 @@ class OpenClawGui(QMainWindow):
         )
         self.wizard_steps_label.setText(
             bi(
-                "1) 保存配置  2) 环境检测  3) 一键修复(可选)  "
-                "4) 一键安装  5) 一键初始化向导  6) 去聊天页开始对话",
-                "1) Save  2) Env Check  3) Repair(optional)  "
-                "4) Install  5) Onboard  6) Go to Chat tab",
+                "1) 环境检测  2) 一键修复(可选)  3) 一键安装  "
+                "4) 设置向导  5) 管理与配置  6) 会话调试",
+                "1) Env Check  2) Repair(optional)  3) Install  "
+                "4) Setup Wizard  5) Manage & Config  6) Chat Debug",
             )
         )
         self.language_label.setText(
             bi("程序界面语言", "App UI Language")
         )
-        self.btn_save.setText(bi("保存配置", "Save"))
+        self.btn_save.setText(bi("保存程序设置", "Save App Settings"))
         self.btn_env_check.setText(bi("环境检测", "Environment Check"))
         self.btn_install.setText(
             bi("一键安装 OpenClaw", "One-click Install OpenClaw")
@@ -2587,45 +2557,6 @@ class OpenClawGui(QMainWindow):
                     "Next suggestion: wait for auto check to finish.",
                 )
             )
-
-        placeholders = {
-            "openclaw_cmd": ("例如：openclaw", "Example: openclaw"),
-            "node_cmd": ("例如：node", "Example: node"),
-            "npm_cmd": ("例如：npm", "Example: npm"),
-            "winget_cmd": ("例如：winget", "Example: winget"),
-            "npm_registry": (
-                "默认：https://registry.npmmirror.com",
-                "Default: https://registry.npmmirror.com",
-            ),
-            "working_dir": (
-                "可留空，默认当前目录",
-                "Optional, defaults to current dir",
-            ),
-            "thinking_level": (
-                "off|minimal|low|medium|high",
-                "off|minimal|low|medium|high",
-            ),
-            "timeout_seconds": ("例如：120", "Example: 120"),
-            "extra_args": ("例如：--verbose", "Example: --verbose"),
-            "test_message": ("用于连接测试", "Used for connectivity test"),
-        }
-        labels = {
-            "openclaw_cmd": ("OpenClaw 命令", "OpenClaw Command"),
-            "node_cmd": ("Node 命令", "Node Command"),
-            "npm_cmd": ("npm 命令", "npm Command"),
-            "winget_cmd": ("winget 命令", "winget Command"),
-            "npm_registry": ("npm 安装源", "npm Registry"),
-            "working_dir": ("工作目录", "Working Directory"),
-            "thinking_level": ("思考等级", "Thinking Level"),
-            "timeout_seconds": ("超时秒数", "Timeout Seconds"),
-            "extra_args": ("附加参数", "Extra Args"),
-            "test_message": ("检测消息", "Check Message"),
-        }
-        for key, label in self.field_labels.items():
-            zh_text, en_text = labels[key]
-            label.setText(bi(zh_text, en_text))
-            ph_zh, ph_en = placeholders[key]
-            self.field_editors[key].setPlaceholderText(bi(ph_zh, ph_en))
 
         self.input_message.setPlaceholderText(
             bi(
@@ -2920,14 +2851,6 @@ class OpenClawGui(QMainWindow):
                 "max_tokens": 10000,
                 "display_name": "Qwen Plus Latest",
             },
-            "qwen-local": {
-                "base_url": "http://10.1.40.107:30000/v1",
-                "model_id": "qwen3.5-4b",
-                "api": "openai-completions",
-                "context_window": 262144,
-                "max_tokens": 10000,
-                "display_name": "Qwen3.5-4B (SGLang Local)",
-            },
             "moonshot": {
                 "base_url": "https://api.moonshot.cn/v1",
                 "model_id": "moonshot-v1-128k",
@@ -2943,6 +2866,14 @@ class OpenClawGui(QMainWindow):
                 "context_window": 131072,
                 "max_tokens": 8192,
                 "display_name": "MiniMax Text 01",
+            },
+            "custom": {
+                "base_url": "",
+                "model_id": "",
+                "api": "openai-completions",
+                "context_window": 131072,
+                "max_tokens": 10000,
+                "display_name": "Custom Model",
             },
         }
 
@@ -3011,10 +2942,6 @@ class OpenClawGui(QMainWindow):
         display_name = str(profile.get("display_name", model_id))
         route = f"{provider}/{model_id}"
         if self.chk_write_provider.isChecked():
-            provider_api_key = api_key
-            if provider.lower() == "qwen-local" and not provider_api_key:
-                # Some OpenClaw auth paths require a non-empty key string.
-                provider_api_key = "local-no-key"
             provider_payload = {
                 "baseUrl": base_url,
                 "api": provider_api,
@@ -3027,8 +2954,8 @@ class OpenClawGui(QMainWindow):
                     }
                 ],
             }
-            if provider_api_key:
-                provider_payload["apiKey"] = provider_api_key
+            if api_key:
+                provider_payload["apiKey"] = api_key
             self._set_nested_config(
                 parsed, ["models", "providers", provider], provider_payload
             )
@@ -3298,8 +3225,10 @@ class OpenClawGui(QMainWindow):
         self.chat_list.scrollToBottom()
 
     def _save_from_ui(self, silent: bool = False) -> None:
-        timeout_text = self.input_timeout.text().strip()
-        timeout_value = 120
+        timeout_text = str(self.config.timeout_seconds or 120)
+        if hasattr(self, "input_timeout"):
+            timeout_text = self.input_timeout.text().strip()
+        timeout_value = self.config.timeout_seconds or 120
         if timeout_text:
             try:
                 timeout_value = int(timeout_text)
@@ -3308,24 +3237,55 @@ class OpenClawGui(QMainWindow):
             except ValueError:
                 timeout_value = 120
 
-        self.config = AppConfig(
-            openclaw_cmd=self.input_cmd.text().strip() or "openclaw",
-            node_cmd=self.input_node_cmd.text().strip() or "node",
-            npm_cmd=self.input_npm_cmd.text().strip() or "npm",
-            winget_cmd=self.input_winget_cmd.text().strip() or "winget",
-            npm_registry=(
+        openclaw_cmd = self.config.openclaw_cmd or "openclaw"
+        node_cmd = self.config.node_cmd or "node"
+        npm_cmd = self.config.npm_cmd or "npm"
+        winget_cmd = self.config.winget_cmd or "winget"
+        npm_registry = (
+            self.config.npm_registry or "https://registry.npmmirror.com"
+        )
+        working_dir = self.config.working_dir
+        thinking_level = self.config.thinking_level or "medium"
+        extra_args = self.config.extra_args
+        test_message = self.config.test_message or "你好，请回复“连接成功”。"
+
+        if hasattr(self, "input_cmd"):
+            openclaw_cmd = self.input_cmd.text().strip() or "openclaw"
+        if hasattr(self, "input_node_cmd"):
+            node_cmd = self.input_node_cmd.text().strip() or "node"
+        if hasattr(self, "input_npm_cmd"):
+            npm_cmd = self.input_npm_cmd.text().strip() or "npm"
+        if hasattr(self, "input_winget_cmd"):
+            winget_cmd = self.input_winget_cmd.text().strip() or "winget"
+        if hasattr(self, "input_registry"):
+            npm_registry = (
                 self.input_registry.text().strip()
                 or "https://registry.npmmirror.com"
-            ),
-            language_mode=self.cmb_language.currentData() or "bilingual",
-            working_dir=self.input_workdir.text().strip(),
-            thinking_level=self.input_thinking.text().strip() or "medium",
-            timeout_seconds=timeout_value,
-            extra_args=self.input_extra.text().strip(),
-            test_message=(
+            )
+        if hasattr(self, "input_workdir"):
+            working_dir = self.input_workdir.text().strip()
+        if hasattr(self, "input_thinking"):
+            thinking_level = self.input_thinking.text().strip() or "medium"
+        if hasattr(self, "input_extra"):
+            extra_args = self.input_extra.text().strip()
+        if hasattr(self, "input_test_message"):
+            test_message = (
                 self.input_test_message.text().strip()
                 or "你好，请回复“连接成功”。"
-            ),
+            )
+
+        self.config = AppConfig(
+            openclaw_cmd=openclaw_cmd,
+            node_cmd=node_cmd,
+            npm_cmd=npm_cmd,
+            winget_cmd=winget_cmd,
+            npm_registry=npm_registry,
+            language_mode=self.cmb_language.currentData() or "bilingual",
+            working_dir=working_dir,
+            thinking_level=thinking_level,
+            timeout_seconds=timeout_value,
+            extra_args=extra_args,
+            test_message=test_message,
         )
         self._save_config(self.config)
         if not silent:
@@ -3335,22 +3295,32 @@ class OpenClawGui(QMainWindow):
         self._log(bi("配置已更新。", "Configuration updated."))
 
     def _apply_config_to_ui(self) -> None:
-        self.input_cmd.setText(self.config.openclaw_cmd)
-        self.input_node_cmd.setText(self.config.node_cmd)
-        self.input_npm_cmd.setText(self.config.npm_cmd)
-        self.input_winget_cmd.setText(self.config.winget_cmd)
-        self.input_registry.setText(self.config.npm_registry)
         language_index = self.cmb_language.findData(self.config.language_mode)
         if language_index < 0:
             language_index = self.cmb_language.findData("bilingual")
         self.cmb_language.blockSignals(True)
         self.cmb_language.setCurrentIndex(language_index)
         self.cmb_language.blockSignals(False)
-        self.input_workdir.setText(self.config.working_dir)
-        self.input_thinking.setText(self.config.thinking_level)
-        self.input_timeout.setText(str(self.config.timeout_seconds))
-        self.input_extra.setText(self.config.extra_args)
-        self.input_test_message.setText(self.config.test_message)
+        if hasattr(self, "input_cmd"):
+            self.input_cmd.setText(self.config.openclaw_cmd)
+        if hasattr(self, "input_node_cmd"):
+            self.input_node_cmd.setText(self.config.node_cmd)
+        if hasattr(self, "input_npm_cmd"):
+            self.input_npm_cmd.setText(self.config.npm_cmd)
+        if hasattr(self, "input_winget_cmd"):
+            self.input_winget_cmd.setText(self.config.winget_cmd)
+        if hasattr(self, "input_registry"):
+            self.input_registry.setText(self.config.npm_registry)
+        if hasattr(self, "input_workdir"):
+            self.input_workdir.setText(self.config.working_dir)
+        if hasattr(self, "input_thinking"):
+            self.input_thinking.setText(self.config.thinking_level)
+        if hasattr(self, "input_timeout"):
+            self.input_timeout.setText(str(self.config.timeout_seconds))
+        if hasattr(self, "input_extra"):
+            self.input_extra.setText(self.config.extra_args)
+        if hasattr(self, "input_test_message"):
+            self.input_test_message.setText(self.config.test_message)
 
     def _log(self, text: str) -> None:
         line = text
