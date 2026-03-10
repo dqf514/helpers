@@ -15,6 +15,7 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QIcon
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QTextBrowser,
     QFrame,
@@ -232,6 +233,7 @@ class SignalBus(QObject):
     env_result = Signal(dict)
     startup_progress = Signal(int, str)
     startup_stage = Signal(str, str, str)
+    service_result = Signal(str, bool, str)
     install_progress = Signal(int, str)
     install_finished = Signal(bool, str)
     error = Signal(str)
@@ -269,6 +271,14 @@ class CommandTask(QRunnable):
                 self._run_onboard_wizard()
             elif self.command_type == "package_exe":
                 self._run_package_exe()
+            elif self.command_type == "service_start":
+                self._run_gateway_service("start")
+            elif self.command_type == "service_restart":
+                self._run_gateway_service("restart")
+            elif self.command_type == "service_stop":
+                self._run_gateway_service("stop")
+            elif self.command_type == "service_status":
+                self._run_gateway_service("status")
         except Exception as ex:
             self.bus.error.emit(bi(f"执行失败：{ex}", f"Execution failed: {ex}"))
         finally:
@@ -440,6 +450,35 @@ class CommandTask(QRunnable):
                 or test_result.stdout.strip()
                 or "连通性测试失败"
             )
+            lower = message.lower()
+            if (
+                "no api key found for provider" in lower
+                or "auth store" in lower
+            ):
+                status_cmd = [self.config.openclaw_cmd, "status"]
+                status_result = self._run_subprocess(
+                    status_cmd,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    timeout=min(self.config.timeout_seconds, 30),
+                    cwd=self.config.working_dir or None,
+                    shell=False,
+                )
+                if status_result.returncode == 0:
+                    self.bus.check_result.emit(
+                        True,
+                        bi(
+                            "检测到 OpenClaw 正在运行。"
+                            "当前主模型缺少 API key，已按运行态通过。"
+                            "请在管理页为该供应商补充 API key，"
+                            "或切换到本地免鉴权模型。",
+                            "OpenClaw is running. Main model is missing API key, "
+                            "runtime is treated as connected. Add API key in "
+                            "Manage tab or switch to local model.",
+                        ),
+                    )
+                    return
             self.bus.check_result.emit(False, message)
             return
 
@@ -1329,6 +1368,103 @@ class CommandTask(QRunnable):
             bi(f"打包成功：{exe_path}", f"Packaging succeeded: {exe_path}"),
         )
 
+    def _run_gateway_service(self, action: str) -> None:
+        action_map = {
+            "start": bi("启动", "start"),
+            "restart": bi("重启", "restart"),
+            "stop": bi("停止", "stop"),
+            "status": bi("状态查询", "status"),
+        }
+        label = action_map.get(action, action)
+
+        if action == "start" and self._is_windows():
+            openclaw_exec = self._resolve_command(self.config.openclaw_cmd)
+            launch_cmd = [
+                "cmd.exe",
+                "/k",
+                f"\"{openclaw_exec}\" gateway start",
+            ]
+            self.bus.log.emit(
+                f"[{self._now()}] "
+                f"{bi('以 CMD 窗口启动网关', 'Starting gateway in CMD window')}: "
+                f"{' '.join(launch_cmd)}"
+            )
+            try:
+                self._popen_subprocess(
+                    launch_cmd,
+                    cwd=self.config.working_dir or None,
+                    shell=False,
+                    creationflags=subprocess.CREATE_NEW_CONSOLE,
+                )
+                self.bus.service_result.emit(
+                    action,
+                    True,
+                    bi(
+                        "已打开 CMD 窗口运行网关。关闭该窗口即停止。",
+                        "Opened CMD window to run gateway. Closing it stops runtime.",
+                    ),
+                )
+            except Exception as ex:
+                self.bus.service_result.emit(
+                    action,
+                    False,
+                    bi(
+                        f"打开 CMD 启动网关失败：{ex}",
+                        f"Failed to open CMD for gateway start: {ex}",
+                    ),
+                )
+            return
+
+        cmd = [self.config.openclaw_cmd, "gateway", action]
+        self.bus.log.emit(
+            f"[{self._now()}] {bi('服务命令', 'Service command')}: "
+            f"{' '.join(cmd)}"
+        )
+        result = self._run_subprocess(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+            cwd=self.config.working_dir or None,
+            shell=False,
+        )
+        output = (result.stdout or "").strip()
+        if not output:
+            output = (result.stderr or "").strip()
+        if not output:
+            output = bi("命令执行完成。", "Command completed.")
+        if action == "status" and result.returncode != 0:
+            fallback_cmd = [self.config.openclaw_cmd, "status"]
+            fallback = self._run_subprocess(
+                fallback_cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=60,
+                cwd=self.config.working_dir or None,
+                shell=False,
+            )
+            fallback_text = (fallback.stdout or "").strip() or (
+                fallback.stderr or ""
+            ).strip()
+            if fallback.returncode == 0 and fallback_text:
+                self.bus.service_result.emit("status", True, fallback_text)
+                return
+        if result.returncode == 0:
+            self.bus.log.emit(f"[{bi('服务', 'Service')}] {output}")
+            self.bus.service_result.emit(action, True, output)
+            return
+        self.bus.log.emit(f"[{bi('服务', 'Service')}] {output}")
+        self.bus.service_result.emit(
+            action,
+            False,
+            bi(
+                f"{label}失败：{output}",
+                f"{label} failed: {output}",
+            ),
+        )
+
     @staticmethod
     def _extract_major_version(version_text: str) -> int:
         match = re.search(r"(\d+)", version_text)
@@ -1350,7 +1486,8 @@ class OpenClawGui(QMainWindow):
         icon_path = app_resource_path(ICON_RELATIVE_PATH)
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
-        self.resize(1280, 860)
+        self.resize(1536, 860)
+        self.setMaximumHeight(1024)
         self.thread_pool = QThreadPool.globalInstance()
         self.bus = SignalBus()
         self.config = self._load_config()
@@ -1364,6 +1501,8 @@ class OpenClawGui(QMainWindow):
             "install": {"status": "pending", "detail": ""},
             "runtime": {"status": "pending", "detail": ""},
         }
+        self.openclaw_config_path: Path | None = None
+        self.runtime_monitor_enabled = False
         self.field_labels: dict[str, QLabel] = {}
         self.field_editors: dict[str, QLineEdit] = {}
         self.action_buttons: list[QPushButton] = []
@@ -1372,6 +1511,11 @@ class OpenClawGui(QMainWindow):
         self._bind_signals()
         self._apply_config_to_ui()
         self._apply_theme()
+        self.runtime_monitor_timer = QTimer(self)
+        self.runtime_monitor_timer.setInterval(15000)
+        self.runtime_monitor_timer.timeout.connect(
+            self._refresh_openclaw_service_status
+        )
         self._log(
             bi(
                 "应用已启动。请先执行“环境检测”。",
@@ -1423,9 +1567,11 @@ class OpenClawGui(QMainWindow):
         self.tabs = QTabWidget()
         self.setup_tab = self._create_setup_tab()
         self.chat_tab = self._create_chat_tab()
+        self.manage_tab = self._create_manage_tab_compact()
         self.log_tab = self._create_log_tab()
         self.tabs.addTab(self.setup_tab, bi("引导与安装", "Setup & Install"))
         self.tabs.addTab(self.chat_tab, bi("会话聊天", "Chat"))
+        self.tabs.addTab(self.manage_tab, bi("管理与配置", "Manage & Config"))
         self.tabs.addTab(self.log_tab, bi("运行日志", "Logs"))
 
         root_layout.addWidget(self.tabs, 1)
@@ -1729,6 +1875,7 @@ class OpenClawGui(QMainWindow):
         self.tips_label.setVisible(False)
         action_layout.addWidget(self.tips_label)
         right_col.addWidget(action_card)
+
         right_col.addStretch(1)
 
         left_box = QWidget()
@@ -1739,6 +1886,307 @@ class OpenClawGui(QMainWindow):
         content_row.addWidget(right_box, 5)
         layout.addLayout(content_row, 1)
         layout.addStretch(1)
+        return page
+
+    def _create_manage_tab_compact(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+        self.manager_header = QLabel(
+            bi("OpenClaw 管理与配置", "OpenClaw Manage & Config")
+        )
+        self.manager_header.setObjectName("sectionHeader")
+        self.manager_desc = QLabel(
+            bi(
+                "直接读写 OpenClaw 配置文件，并控制网关启动/重启/停止。",
+                "Directly edit OpenClaw config file and control gateway service.",
+            )
+        )
+        self.manager_desc.setObjectName("tipsLabel")
+        self.manager_desc.setWordWrap(True)
+        layout.addWidget(self.manager_header)
+        layout.addWidget(self.manager_desc)
+
+        split_row = QHBoxLayout()
+        split_row.setSpacing(12)
+
+        left_card = QFrame()
+        left_card.setObjectName("card")
+        left_layout = QVBoxLayout(left_card)
+        left_layout.setContentsMargins(12, 12, 12, 12)
+        left_layout.setSpacing(8)
+        self.minimal_header = QLabel(
+            bi("最小必要设置模板", "Minimal Setup Template")
+        )
+        self.minimal_header.setObjectName("sectionHeader")
+        left_layout.addWidget(self.minimal_header)
+        self.minimal_desc = QLabel(
+            bi(
+                "只填写必要字段，可选跳过其它项。应用后会更新下方 JSON。",
+                "Fill only required fields, optional items can be skipped.",
+            )
+        )
+        self.minimal_desc.setObjectName("fieldLabel")
+        self.minimal_desc.setWordWrap(True)
+        left_layout.addWidget(self.minimal_desc)
+        minimal_form = QGridLayout()
+        minimal_form.setHorizontalSpacing(8)
+        minimal_form.setVerticalSpacing(6)
+        minimal_form.setColumnStretch(1, 1)
+        self.min_provider_label = QLabel(bi("提供商", "Provider"))
+        self.min_model_label = QLabel(bi("模型 ID", "Model ID"))
+        self.min_base_url_label = QLabel(bi("Base URL", "Base URL"))
+        self.min_api_key_label = QLabel(bi("API Key", "API Key"))
+        self.min_provider = QComboBox()
+        self.min_provider.addItem("kimi-coding")
+        self.min_provider.addItem("qwen")
+        self.min_provider.addItem("qwen-local")
+        self.min_provider.addItem("moonshot")
+        self.min_provider.addItem("minimax")
+        self.min_model_id = QLineEdit("k2p5")
+        self.min_base_url = QLineEdit("https://api.kimi.com/coding/")
+        self.min_api_key = QLineEdit()
+        self.min_api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        minimal_form.addWidget(self.min_provider_label, 0, 0)
+        minimal_form.addWidget(self.min_provider, 0, 1)
+        minimal_form.addWidget(self.min_model_label, 1, 0)
+        minimal_form.addWidget(self.min_model_id, 1, 1)
+        minimal_form.addWidget(self.min_base_url_label, 2, 0)
+        minimal_form.addWidget(self.min_base_url, 2, 1)
+        minimal_form.addWidget(self.min_api_key_label, 3, 0)
+        minimal_form.addWidget(self.min_api_key, 3, 1)
+        left_layout.addLayout(minimal_form)
+        self.chk_write_provider = QCheckBox(
+            bi("写入提供商与认证配置", "Write provider/auth config")
+        )
+        self.chk_write_provider.setChecked(True)
+        self.chk_write_routing = QCheckBox(
+            bi("写入默认模型路由", "Write default model routing")
+        )
+        self.chk_write_routing.setChecked(True)
+        self.chk_auto_start = QCheckBox(
+            bi("保存后自动启动服务", "Auto-start service after save")
+        )
+        self.chk_auto_start.setChecked(True)
+        left_layout.addWidget(self.chk_write_provider)
+        left_layout.addWidget(self.chk_write_routing)
+        left_layout.addWidget(self.chk_auto_start)
+        self.btn_apply_minimal = QPushButton(
+            bi("应用最小设置", "Apply Minimal Setup")
+        )
+        left_layout.addWidget(self.btn_apply_minimal)
+        self.service_header = QLabel(bi("服务控制", "Service Controls"))
+        self.service_header.setObjectName("sectionHeader")
+        left_layout.addWidget(self.service_header)
+        svc_btn_grid = QGridLayout()
+        svc_btn_grid.setHorizontalSpacing(8)
+        svc_btn_grid.setVerticalSpacing(8)
+        self.btn_service_start = QPushButton(bi("启动服务", "Start Service"))
+        self.btn_service_restart = QPushButton(bi("重启服务", "Restart Service"))
+        self.btn_service_stop = QPushButton(bi("停止服务", "Stop Service"))
+        self.btn_service_status = QPushButton(bi("刷新状态", "Refresh Status"))
+        self.btn_service_monitor = QPushButton(bi("开启监控", "Start Monitor"))
+        svc_btn_grid.addWidget(self.btn_service_start, 0, 0)
+        svc_btn_grid.addWidget(self.btn_service_restart, 0, 1)
+        svc_btn_grid.addWidget(self.btn_service_stop, 1, 0)
+        svc_btn_grid.addWidget(self.btn_service_status, 1, 1)
+        svc_btn_grid.addWidget(self.btn_service_monitor, 2, 0, 1, 2)
+        left_layout.addLayout(svc_btn_grid)
+        self.service_status_label = QLabel(
+            bi("服务状态：未查询", "Service status: not queried")
+        )
+        self.service_status_label.setObjectName("fieldLabel")
+        self.service_status_label.setWordWrap(True)
+        left_layout.addWidget(self.service_status_label)
+        left_layout.addStretch(1)
+
+        right_card = QFrame()
+        right_card.setObjectName("card")
+        right_layout = QVBoxLayout(right_card)
+        right_layout.setContentsMargins(12, 12, 12, 12)
+        right_layout.setSpacing(8)
+        self.config_editor_header = QLabel(
+            bi("配置文件编辑", "Config File Editor")
+        )
+        self.config_editor_header.setObjectName("sectionHeader")
+        right_layout.addWidget(self.config_editor_header)
+        self.openclaw_cfg_path_label = QLabel(
+            bi("配置文件：未加载", "Config file: not loaded")
+        )
+        self.openclaw_cfg_path_label.setObjectName("fieldLabel")
+        right_layout.addWidget(self.openclaw_cfg_path_label)
+        cfg_btn_row = QHBoxLayout()
+        cfg_btn_row.setSpacing(8)
+        self.btn_cfg_load = QPushButton(bi("读取配置文件", "Load Config File"))
+        self.btn_cfg_save = QPushButton(bi("保存配置文件", "Save Config File"))
+        cfg_btn_row.addWidget(self.btn_cfg_load)
+        cfg_btn_row.addWidget(self.btn_cfg_save)
+        cfg_btn_row.addStretch(1)
+        right_layout.addLayout(cfg_btn_row)
+        self.openclaw_cfg_editor = QPlainTextEdit()
+        self.openclaw_cfg_editor.setPlaceholderText(
+            bi(
+                "这里显示 openclaw.json，可直接编辑后保存。",
+                "openclaw.json content is shown here for direct edit.",
+            )
+        )
+        self.openclaw_cfg_editor.setMinimumHeight(420)
+        right_layout.addWidget(self.openclaw_cfg_editor, 1)
+
+        split_row.addWidget(left_card, 4)
+        split_row.addWidget(right_card, 6)
+        layout.addLayout(split_row, 1)
+        self.manage_bottom_status = QLabel()
+        self.manage_bottom_status.setObjectName("summaryWarn")
+        self.manage_bottom_status.setWordWrap(True)
+        layout.addWidget(self.manage_bottom_status)
+        self._refresh_manage_bottom_status()
+        return page
+
+    def _create_manage_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+
+        manager_card = QFrame()
+        manager_card.setObjectName("card")
+        manager_layout = QVBoxLayout(manager_card)
+        manager_layout.setContentsMargins(12, 12, 12, 12)
+        manager_layout.setSpacing(8)
+        self.manager_header = QLabel(
+            bi("OpenClaw 管理与配置", "OpenClaw Manage & Config")
+        )
+        self.manager_header.setObjectName("sectionHeader")
+        manager_layout.addWidget(self.manager_header)
+        self.manager_desc = QLabel(
+            bi(
+                "直接读写 OpenClaw 配置文件，并控制网关启动/重启/停止。",
+                "Directly edit OpenClaw config file and control gateway service.",
+            )
+        )
+        self.manager_desc.setObjectName("tipsLabel")
+        self.manager_desc.setWordWrap(True)
+        manager_layout.addWidget(self.manager_desc)
+        self.openclaw_cfg_path_label = QLabel(
+            bi("配置文件：未加载", "Config file: not loaded")
+        )
+        self.openclaw_cfg_path_label.setObjectName("fieldLabel")
+        manager_layout.addWidget(self.openclaw_cfg_path_label)
+
+        cfg_btn_row = QHBoxLayout()
+        cfg_btn_row.setSpacing(8)
+        self.btn_cfg_load = QPushButton(bi("读取配置文件", "Load Config File"))
+        self.btn_cfg_save = QPushButton(bi("保存配置文件", "Save Config File"))
+        cfg_btn_row.addWidget(self.btn_cfg_load)
+        cfg_btn_row.addWidget(self.btn_cfg_save)
+        manager_layout.addLayout(cfg_btn_row)
+
+        self.minimal_header = QLabel(
+            bi("最小必要设置模板", "Minimal Setup Template")
+        )
+        self.minimal_header.setObjectName("sectionHeader")
+        manager_layout.addWidget(self.minimal_header)
+        self.minimal_desc = QLabel(
+            bi(
+                "只填写必要字段，可选跳过其它项。应用后会更新下方 JSON。",
+                "Fill only required fields, optional items can be skipped.",
+            )
+        )
+        self.minimal_desc.setObjectName("fieldLabel")
+        self.minimal_desc.setWordWrap(True)
+        manager_layout.addWidget(self.minimal_desc)
+
+        minimal_form = QGridLayout()
+        minimal_form.setHorizontalSpacing(8)
+        minimal_form.setVerticalSpacing(6)
+        self.min_provider_label = QLabel(bi("提供商", "Provider"))
+        self.min_model_label = QLabel(bi("模型 ID", "Model ID"))
+        self.min_base_url_label = QLabel(bi("Base URL", "Base URL"))
+        self.min_api_key_label = QLabel(bi("API Key", "API Key"))
+        self.min_provider = QComboBox()
+        self.min_provider.addItem("kimi-coding")
+        self.min_provider.addItem("qwen")
+        self.min_provider.addItem("moonshot")
+        self.min_provider.addItem("minimax")
+        self.min_model_id = QLineEdit("k2p5")
+        self.min_base_url = QLineEdit("https://api.kimi.com/coding/")
+        self.min_api_key = QLineEdit()
+        self.min_api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        minimal_form.addWidget(self.min_provider_label, 0, 0)
+        minimal_form.addWidget(self.min_provider, 0, 1)
+        minimal_form.addWidget(self.min_model_label, 1, 0)
+        minimal_form.addWidget(self.min_model_id, 1, 1)
+        minimal_form.addWidget(self.min_base_url_label, 2, 0)
+        minimal_form.addWidget(self.min_base_url, 2, 1)
+        minimal_form.addWidget(self.min_api_key_label, 3, 0)
+        minimal_form.addWidget(self.min_api_key, 3, 1)
+        manager_layout.addLayout(minimal_form)
+
+        self.chk_write_provider = QCheckBox(
+            bi("写入提供商与认证配置", "Write provider/auth config")
+        )
+        self.chk_write_provider.setChecked(True)
+        self.chk_write_routing = QCheckBox(
+            bi("写入默认模型路由", "Write default model routing")
+        )
+        self.chk_write_routing.setChecked(True)
+        self.chk_auto_start = QCheckBox(
+            bi("保存后自动启动服务", "Auto-start service after save")
+        )
+        self.chk_auto_start.setChecked(True)
+        manager_layout.addWidget(self.chk_write_provider)
+        manager_layout.addWidget(self.chk_write_routing)
+        manager_layout.addWidget(self.chk_auto_start)
+
+        self.btn_apply_minimal = QPushButton(
+            bi("应用最小设置", "Apply Minimal Setup")
+        )
+        manager_layout.addWidget(self.btn_apply_minimal)
+
+        self.openclaw_cfg_editor = QPlainTextEdit()
+        self.openclaw_cfg_editor.setPlaceholderText(
+            bi(
+                "这里显示 openclaw.json，可直接编辑后保存。",
+                "openclaw.json content is shown here for direct edit.",
+            )
+        )
+        self.openclaw_cfg_editor.setMinimumHeight(280)
+        manager_layout.addWidget(self.openclaw_cfg_editor, 1)
+
+        svc_btn_row = QHBoxLayout()
+        svc_btn_row.setSpacing(8)
+        self.btn_service_start = QPushButton(
+            bi("启动服务", "Start Service")
+        )
+        self.btn_service_restart = QPushButton(
+            bi("重启服务", "Restart Service")
+        )
+        self.btn_service_stop = QPushButton(
+            bi("停止服务", "Stop Service")
+        )
+        self.btn_service_status = QPushButton(
+            bi("刷新状态", "Refresh Status")
+        )
+        self.btn_service_monitor = QPushButton(
+            bi("开启监控", "Start Monitor")
+        )
+        svc_btn_row.addWidget(self.btn_service_start)
+        svc_btn_row.addWidget(self.btn_service_restart)
+        svc_btn_row.addWidget(self.btn_service_stop)
+        svc_btn_row.addWidget(self.btn_service_status)
+        svc_btn_row.addWidget(self.btn_service_monitor)
+        manager_layout.addLayout(svc_btn_row)
+
+        self.service_status_label = QLabel(
+            bi("服务状态：未查询", "Service status: not queried")
+        )
+        self.service_status_label.setObjectName("fieldLabel")
+        self.service_status_label.setWordWrap(True)
+        manager_layout.addWidget(self.service_status_label)
+
+        layout.addWidget(manager_card, 1)
         return page
 
     def _create_chat_tab(self) -> QWidget:
@@ -1818,6 +2266,23 @@ class OpenClawGui(QMainWindow):
         self.btn_repair.clicked.connect(self._repair_environment)
         self.btn_onboard.clicked.connect(self._start_onboard_wizard)
         self.btn_package.clicked.connect(self._package_exe)
+        self.btn_cfg_load.clicked.connect(self._load_openclaw_config_file)
+        self.btn_cfg_save.clicked.connect(self._save_openclaw_config_file)
+        self.btn_apply_minimal.clicked.connect(self._apply_minimal_openclaw_config)
+        self.min_provider.currentIndexChanged.connect(
+            self._on_minimal_provider_changed
+        )
+        self.btn_service_start.clicked.connect(
+            lambda: self._run_openclaw_service_action("start")
+        )
+        self.btn_service_restart.clicked.connect(
+            lambda: self._run_openclaw_service_action("restart")
+        )
+        self.btn_service_stop.clicked.connect(
+            lambda: self._run_openclaw_service_action("stop")
+        )
+        self.btn_service_status.clicked.connect(self._refresh_openclaw_service_status)
+        self.btn_service_monitor.clicked.connect(self._toggle_service_monitor)
         self.btn_send.clicked.connect(self._send_message)
         self.btn_chat_check.clicked.connect(self._check_connection)
         self.btn_clear.clicked.connect(self.chat_list.clear)
@@ -1832,6 +2297,7 @@ class OpenClawGui(QMainWindow):
         self.bus.env_result.connect(self._on_env_result)
         self.bus.startup_progress.connect(self._on_startup_progress)
         self.bus.startup_stage.connect(self._on_startup_stage)
+        self.bus.service_result.connect(self._on_service_result)
         self.bus.install_progress.connect(self._on_install_progress)
         self.bus.install_finished.connect(self._on_install_finished)
         self.bus.error.connect(self._on_error)
@@ -1987,6 +2453,15 @@ class OpenClawGui(QMainWindow):
         self.op_header.setText(bi("操作步骤", "Action Steps"))
         self.env_header.setText(bi("环境检测结果", "Environment Status"))
         self.action_header.setText(bi("安装与维护", "Install & Maintenance"))
+        self.manager_header.setText(
+            bi("OpenClaw 管理与配置", "OpenClaw Manage & Config")
+        )
+        self.manager_desc.setText(
+            bi(
+                "直接读写 OpenClaw 配置文件，并控制网关启动/重启/停止。",
+                "Directly edit OpenClaw config file and control gateway service.",
+            )
+        )
         self.log_header.setText(bi("运行日志", "Runtime Logs"))
         self.chat_header.setText(bi("会话聊天", "Chat Session"))
         self.chat_note_label.setText(
@@ -2021,12 +2496,51 @@ class OpenClawGui(QMainWindow):
             bi("设置向导", "Setup Wizard")
         )
         self.btn_package.setText(bi("一键打包 EXE", "One-click Package EXE"))
+        self.btn_cfg_load.setText(bi("读取配置文件", "Load Config File"))
+        self.btn_cfg_save.setText(bi("保存配置文件", "Save Config File"))
+        self.minimal_header.setText(bi("最小必要设置模板", "Minimal Setup Template"))
+        self.minimal_desc.setText(
+            bi(
+                "只填写必要字段，可选跳过其它项。应用后会更新下方 JSON。",
+                "Fill only required fields, optional items can be skipped.",
+            )
+        )
+        self.min_provider_label.setText(bi("提供商", "Provider"))
+        self.min_model_label.setText(bi("模型 ID", "Model ID"))
+        self.min_base_url_label.setText(bi("Base URL", "Base URL"))
+        self.min_api_key_label.setText(bi("API Key", "API Key"))
+        self.chk_write_provider.setText(
+            bi("写入提供商与认证配置", "Write provider/auth config")
+        )
+        self.chk_write_routing.setText(
+            bi("写入默认模型路由", "Write default model routing")
+        )
+        self.chk_auto_start.setText(
+            bi("保存后自动启动服务", "Auto-start service after save")
+        )
+        self.btn_apply_minimal.setText(bi("应用最小设置", "Apply Minimal Setup"))
+        if hasattr(self, "service_header"):
+            self.service_header.setText(bi("服务控制", "Service Controls"))
+        if hasattr(self, "config_editor_header"):
+            self.config_editor_header.setText(
+                bi("配置文件编辑", "Config File Editor")
+            )
+        self.btn_service_start.setText(bi("启动服务", "Start Service"))
+        self.btn_service_restart.setText(bi("重启服务", "Restart Service"))
+        self.btn_service_stop.setText(bi("停止服务", "Stop Service"))
+        self.btn_service_status.setText(bi("刷新状态", "Refresh Status"))
+        self.btn_service_monitor.setText(
+            bi("停止监控", "Stop Monitor")
+            if self.runtime_monitor_enabled
+            else bi("开启监控", "Start Monitor")
+        )
         self.btn_chat_check.setText(bi("检测连接", "Connection Test"))
         self.btn_clear.setText(bi("清空会话", "Clear"))
         self.btn_send.setText(bi("发送消息", "Send"))
         self.tabs.setTabText(0, bi("引导与安装", "Setup & Install"))
         self.tabs.setTabText(1, bi("会话聊天", "Chat"))
-        self.tabs.setTabText(2, bi("运行日志", "Logs"))
+        self.tabs.setTabText(2, bi("管理与配置", "Manage & Config"))
+        self.tabs.setTabText(3, bi("运行日志", "Logs"))
         self.lbl_install_hint.setText(
             bi(
                 "仅在检测全部通过后可点击安装",
@@ -2036,6 +2550,25 @@ class OpenClawGui(QMainWindow):
         self.install_status.setText(
             bi("启动检测：待执行", "Startup check: pending")
         )
+        if self.openclaw_config_path is None:
+            self.openclaw_cfg_path_label.setText(
+                bi("配置文件：未加载", "Config file: not loaded")
+            )
+        else:
+            self.openclaw_cfg_path_label.setText(
+                f"{bi('配置文件', 'Config file')}: {self.openclaw_config_path}"
+            )
+        self._refresh_manage_bottom_status()
+        self.openclaw_cfg_editor.setPlaceholderText(
+            bi(
+                "这里显示 openclaw.json，可直接编辑后保存。",
+                "openclaw.json content is shown here for direct edit.",
+            )
+        )
+        if "服务状态" not in self.service_status_label.text():
+            self.service_status_label.setText(
+                bi("服务状态：未查询", "Service status: not queried")
+            )
         self._refresh_startup_checklist()
         self.tips_label.setText(
             bi(
@@ -2222,6 +2755,349 @@ class OpenClawGui(QMainWindow):
         self._save_from_ui(silent=True)
         self._run_task("", "package_exe")
 
+    def _resolve_openclaw_config_path(self) -> Path | None:
+        try:
+            cmd = [self.config.openclaw_cmd, "config", "file"]
+            result = subprocess.run(
+                [resolve_command_for_system(cmd[0]), cmd[1], cmd[2]],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=30,
+                shell=False,
+            )
+            if result.returncode != 0:
+                return None
+            raw = (result.stdout or "").strip()
+            if not raw:
+                return None
+            normalized = raw.replace("~", str(Path.home()), 1)
+            return Path(normalized)
+        except Exception:
+            return None
+
+    def _load_openclaw_config_file(self) -> None:
+        self._save_from_ui(silent=True)
+        cfg_path = self._resolve_openclaw_config_path()
+        if cfg_path is None:
+            QMessageBox.warning(
+                self,
+                bi("读取失败", "Load failed"),
+                bi(
+                    "无法定位 OpenClaw 配置文件，请先确认 OpenClaw 可用。",
+                    "Cannot locate OpenClaw config file. Check OpenClaw first.",
+                ),
+            )
+            return
+        self.openclaw_config_path = cfg_path
+        self.openclaw_cfg_path_label.setText(
+            f"{bi('配置文件', 'Config file')}: {cfg_path}"
+        )
+        self._refresh_manage_bottom_status()
+        if not cfg_path.exists():
+            self.openclaw_cfg_editor.setPlainText("{}\n")
+            self._log(
+                bi(
+                    "配置文件不存在，已准备空白 JSON，可直接保存创建。",
+                    "Config file not found; blank JSON prepared for creation.",
+                )
+            )
+            return
+        try:
+            text = cfg_path.read_text(encoding="utf-8")
+        except Exception as ex:
+            QMessageBox.warning(
+                self,
+                bi("读取失败", "Load failed"),
+                bi(f"读取配置文件失败：{ex}", f"Read config file failed: {ex}"),
+            )
+            return
+        self.openclaw_cfg_editor.setPlainText(text)
+
+    def _save_openclaw_config_file(self) -> None:
+        self._save_from_ui(silent=True)
+        self._write_openclaw_config_editor_content(refresh_status=True)
+
+    def _refresh_manage_bottom_status(self, service_line: str | None = None) -> None:
+        if not hasattr(self, "manage_bottom_status"):
+            return
+        cfg_text = (
+            str(self.openclaw_config_path)
+            if self.openclaw_config_path
+            else bi("未加载", "Not loaded")
+        )
+        if service_line is None:
+            raw = self.service_status_label.text().strip()
+            service_line = raw.splitlines()[0] if raw else bi(
+                "服务状态：未查询",
+                "Service status: not queried",
+            )
+        text = bi(
+            f"配置文件：{cfg_text}    |    {service_line}",
+            f"Config file: {cfg_text}    |    {service_line}",
+        )
+        self.manage_bottom_status.setText(text)
+
+    def _write_openclaw_config_editor_content(self, refresh_status: bool) -> bool:
+        cfg_path = self.openclaw_config_path or self._resolve_openclaw_config_path()
+        if cfg_path is None:
+            QMessageBox.warning(
+                self,
+                bi("保存失败", "Save failed"),
+                bi(
+                    "无法定位 OpenClaw 配置文件，请先点击“读取配置文件”。",
+                    "Cannot locate OpenClaw config file. Click Load Config first.",
+                ),
+            )
+            return False
+        content = self.openclaw_cfg_editor.toPlainText().strip()
+        if not content:
+            content = "{}"
+        try:
+            parsed = json.loads(content)
+        except Exception as ex:
+            QMessageBox.warning(
+                self,
+                bi("保存失败", "Save failed"),
+                bi(f"JSON 格式错误：{ex}", f"Invalid JSON: {ex}"),
+            )
+            return False
+        try:
+            cfg_path.parent.mkdir(parents=True, exist_ok=True)
+            cfg_path.write_text(
+                json.dumps(parsed, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        except Exception as ex:
+            QMessageBox.warning(
+                self,
+                bi("保存失败", "Save failed"),
+                bi(f"写入配置失败：{ex}", f"Write config failed: {ex}"),
+            )
+            return False
+        self.openclaw_config_path = cfg_path
+        self.openclaw_cfg_path_label.setText(
+            f"{bi('配置文件', 'Config file')}: {cfg_path}"
+        )
+        self._refresh_manage_bottom_status()
+        self.openclaw_cfg_editor.setPlainText(
+            json.dumps(parsed, ensure_ascii=False, indent=2) + "\n"
+        )
+        self._log(
+            bi("OpenClaw 配置文件已保存。", "OpenClaw config file saved.")
+        )
+        if refresh_status:
+            self._refresh_openclaw_service_status()
+        return True
+
+    @staticmethod
+    def _set_nested_config(data: dict, path: list[str], value: object) -> None:
+        node = data
+        for key in path[:-1]:
+            current = node.get(key)
+            if not isinstance(current, dict):
+                current = {}
+                node[key] = current
+            node = current
+        node[path[-1]] = value
+
+    @staticmethod
+    def _minimal_provider_profiles() -> dict[str, dict[str, object]]:
+        return {
+            "kimi-coding": {
+                "base_url": "https://api.kimi.com/coding/",
+                "model_id": "k2p5",
+                "api": "anthropic-messages",
+                "context_window": 262144,
+                "max_tokens": 32768,
+                "display_name": "Kimi for Coding",
+            },
+            "qwen": {
+                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "model_id": "qwen-plus-latest",
+                "api": "openai-completions",
+                "context_window": 131072,
+                "max_tokens": 10000,
+                "display_name": "Qwen Plus Latest",
+            },
+            "qwen-local": {
+                "base_url": "http://10.1.40.107:30000/v1",
+                "model_id": "qwen3.5-4b",
+                "api": "openai-completions",
+                "context_window": 262144,
+                "max_tokens": 10000,
+                "display_name": "Qwen3.5-4B (SGLang Local)",
+            },
+            "moonshot": {
+                "base_url": "https://api.moonshot.cn/v1",
+                "model_id": "moonshot-v1-128k",
+                "api": "openai-completions",
+                "context_window": 131072,
+                "max_tokens": 8192,
+                "display_name": "Moonshot 128k",
+            },
+            "minimax": {
+                "base_url": "https://api.minimaxi.com/v1",
+                "model_id": "MiniMax-Text-01",
+                "api": "openai-completions",
+                "context_window": 131072,
+                "max_tokens": 8192,
+                "display_name": "MiniMax Text 01",
+            },
+        }
+
+    def _on_minimal_provider_changed(self, _index: int) -> None:
+        provider = self.min_provider.currentText().strip().lower()
+        profile = self._minimal_provider_profiles().get(provider, {})
+        base_url = str(profile.get("base_url", "")).strip()
+        model_id = str(profile.get("model_id", "")).strip()
+        if base_url:
+            self.min_base_url.setText(base_url)
+        if model_id:
+            self.min_model_id.setText(model_id)
+
+    def _apply_minimal_openclaw_config(self) -> None:
+        self._save_from_ui(silent=True)
+        content = self.openclaw_cfg_editor.toPlainText().strip()
+        if not content:
+            content = "{}"
+        try:
+            parsed = json.loads(content)
+        except Exception as ex:
+            QMessageBox.warning(
+                self,
+                bi("应用失败", "Apply failed"),
+                bi(
+                    f"当前 JSON 格式错误，请先修正：{ex}",
+                    f"Current JSON is invalid, fix it first: {ex}",
+                ),
+            )
+            return
+        if not isinstance(parsed, dict):
+            QMessageBox.warning(
+                self,
+                bi("应用失败", "Apply failed"),
+                bi(
+                    "配置根节点必须是对象（JSON Object）。",
+                    "Config root must be a JSON object.",
+                ),
+            )
+            return
+
+        provider = self.min_provider.currentText().strip()
+        model_id = self.min_model_id.text().strip()
+        base_url = self.min_base_url.text().strip()
+        api_key = self.min_api_key.text().strip()
+        if not provider or not model_id or not base_url:
+            QMessageBox.warning(
+                self,
+                bi("应用失败", "Apply failed"),
+                bi(
+                    "提供商、模型 ID、Base URL 为必填项。",
+                    "Provider, Model ID and Base URL are required.",
+                ),
+            )
+            return
+
+        profile = self._minimal_provider_profiles().get(
+            provider.lower(),
+            {},
+        )
+        provider_api = str(
+            profile.get("api", "openai-completions")
+        )
+        context_window = int(profile.get("context_window", 131072))
+        max_tokens = int(profile.get("max_tokens", 10000))
+        display_name = str(profile.get("display_name", model_id))
+        route = f"{provider}/{model_id}"
+        if self.chk_write_provider.isChecked():
+            provider_api_key = api_key
+            if provider.lower() == "qwen-local" and not provider_api_key:
+                # Some OpenClaw auth paths require a non-empty key string.
+                provider_api_key = "local-no-key"
+            provider_payload = {
+                "baseUrl": base_url,
+                "api": provider_api,
+                "models": [
+                    {
+                        "id": model_id,
+                        "name": display_name,
+                        "contextWindow": context_window,
+                        "maxTokens": max_tokens,
+                    }
+                ],
+            }
+            if provider_api_key:
+                provider_payload["apiKey"] = provider_api_key
+            self._set_nested_config(
+                parsed, ["models", "providers", provider], provider_payload
+            )
+            self._set_nested_config(
+                parsed,
+                ["auth", "profiles", f"{provider}:default", "provider"],
+                provider,
+            )
+            self._set_nested_config(
+                parsed,
+                ["auth", "profiles", f"{provider}:default", "mode"],
+                "api_key",
+            )
+            self._set_nested_config(parsed, ["models", "mode"], "merge")
+        if self.chk_write_routing.isChecked():
+            self._set_nested_config(
+                parsed, ["agents", "defaults", "model", "primary"], route
+            )
+            self._set_nested_config(
+                parsed,
+                ["agents", "defaults", "models", route, "reasoning", "effort"],
+                "medium",
+            )
+
+        self.openclaw_cfg_editor.setPlainText(
+            json.dumps(parsed, ensure_ascii=False, indent=2) + "\n"
+        )
+        if not self._write_openclaw_config_editor_content(
+            refresh_status=not self.chk_auto_start.isChecked()
+        ):
+            return
+        self._log(
+            bi(
+                "最小必要设置已应用并写入配置文件。",
+                "Minimal setup has been applied and saved.",
+            )
+        )
+        if self.chk_auto_start.isChecked():
+            self._run_openclaw_service_action("start")
+
+    def _run_openclaw_service_action(self, action: str) -> None:
+        if self.running:
+            QMessageBox.information(
+                self,
+                bi("提示", "Notice"),
+                bi("有任务正在执行，请稍候。", "A task is running, please wait."),
+            )
+            return
+        self._save_from_ui(silent=True)
+        self._run_task("", f"service_{action}")
+
+    def _refresh_openclaw_service_status(self) -> None:
+        self._run_openclaw_service_action("status")
+
+    def _toggle_service_monitor(self) -> None:
+        if self.runtime_monitor_enabled:
+            self.runtime_monitor_enabled = False
+            self.runtime_monitor_timer.stop()
+            self.btn_service_monitor.setText(
+                bi("开启监控", "Start Monitor")
+            )
+            return
+        self.runtime_monitor_enabled = True
+        self.runtime_monitor_timer.start()
+        self.btn_service_monitor.setText(
+            bi("停止监控", "Stop Monitor")
+        )
+        self._refresh_openclaw_service_status()
+
     def _run_task(self, message: str, command_type: str) -> None:
         self.running = True
         self._set_controls_enabled(False)
@@ -2249,6 +3125,22 @@ class OpenClawGui(QMainWindow):
         self.btn_uninstall.setEnabled(enabled)
         self.btn_onboard.setEnabled(enabled)
         self.btn_package.setEnabled(enabled)
+        self.btn_cfg_load.setEnabled(enabled)
+        self.btn_cfg_save.setEnabled(enabled)
+        self.btn_apply_minimal.setEnabled(enabled)
+        self.btn_service_start.setEnabled(enabled)
+        self.btn_service_restart.setEnabled(enabled)
+        self.btn_service_stop.setEnabled(enabled)
+        self.btn_service_status.setEnabled(enabled)
+        self.btn_service_monitor.setEnabled(enabled)
+        self.openclaw_cfg_editor.setEnabled(enabled)
+        self.min_provider.setEnabled(enabled)
+        self.min_model_id.setEnabled(enabled)
+        self.min_base_url.setEnabled(enabled)
+        self.min_api_key.setEnabled(enabled)
+        self.chk_write_provider.setEnabled(enabled)
+        self.chk_write_routing.setEnabled(enabled)
+        self.chk_auto_start.setEnabled(enabled)
         self.input_message.setEnabled(enabled)
         if enabled:
             self.btn_install.setEnabled(self.env_install_ready)
@@ -2272,6 +3164,24 @@ class OpenClawGui(QMainWindow):
             QMessageBox.warning(
                 self, bi("连接失败", "Connection failed"), message
             )
+
+    def _on_service_result(self, action: str, ok: bool, message: str) -> None:
+        tag = {
+            "start": bi("启动服务", "Start service"),
+            "restart": bi("重启服务", "Restart service"),
+            "stop": bi("停止服务", "Stop service"),
+            "status": bi("服务状态", "Service status"),
+        }.get(action, action)
+        status_text = bi("成功", "ok") if ok else bi("失败", "failed")
+        status_line = f"{tag}: {status_text}"
+        self.service_status_label.setText(f"{status_line}\n{message}")
+        self._refresh_manage_bottom_status(status_line)
+        if action == "status":
+            return
+        if ok:
+            QMessageBox.information(self, bi("执行成功", "Success"), message)
+        else:
+            QMessageBox.warning(self, bi("执行失败", "Failed"), message)
 
     def _on_env_result(self, details: dict) -> None:
         self.last_env_details = details
